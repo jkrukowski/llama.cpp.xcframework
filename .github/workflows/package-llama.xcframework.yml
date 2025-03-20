@@ -1,0 +1,314 @@
+name: Package llama.cpp XCFramework
+
+on:
+  schedule:
+    # Run once a day at midnight UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # Allow manual triggering
+    inputs:
+      semver_override:
+        description: 'Semantic version override (e.g., 0.1.0)'
+        required: false
+        default: ''
+
+jobs:
+  check-and-build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Fetch all history to get tags
+
+      - name: Check for new llama.cpp release
+        id: check_release
+        uses: actions/github-script@v6
+        with:
+          script: |
+            // Get latest release from llama.cpp
+            const response = await github.rest.repos.getLatestRelease({
+              owner: 'ggml-org',
+              repo: 'llama.cpp'
+            });
+
+            const latestTag = response.data.tag_name;
+            console.log(`Latest llama.cpp release tag: ${latestTag}`);
+
+            // Get releases from current repo to check if we've already processed this version
+            const ourReleases = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo
+            });
+
+            // Check if we already have a release with this llama tag
+            const alreadyProcessed = ourReleases.data.some(release =>
+              release.body.includes(`Built from llama.cpp ${latestTag}`) ||
+              release.tag_name === `${latestTag}` ||
+              release.name.includes(latestTag)
+            );
+
+            if (alreadyProcessed && !context.payload.inputs?.semver_override) {
+              console.log(`Already processed llama.cpp version ${latestTag}, skipping.`);
+              return {
+                process: false,
+                tag: latestTag,
+                download_url: ''
+              };
+            }
+
+            // We need to process this new release
+            console.log(`New llama.cpp release ${latestTag} found, will process.`);
+
+            // Find the zip asset
+            const assets = response.data.assets;
+            const zipAsset = assets.find(asset => asset.name.endsWith('.zip') && asset.name.includes('llama.cpp'));
+
+            if (!zipAsset) {
+              core.setFailed('No zip file found in latest release');
+              return {
+                process: false,
+                tag: latestTag,
+                download_url: ''
+              };
+            }
+
+            console.log(`Found zip asset: ${zipAsset.name}`);
+            console.log(`Download URL: ${zipAsset.browser_download_url}`);
+
+            return {
+              process: true,
+              tag: latestTag,
+              download_url: zipAsset.browser_download_url,
+              release_notes: response.data.body || 'No release notes provided'
+            };
+
+      - name: Determine semantic version
+        if: fromJSON(steps.check_release.outputs.result).process
+        id: semver
+        run: |
+          # Set LLAMA_TAG from the previous step
+          LLAMA_TAG=$(echo '${{ steps.check_release.outputs.result }}' | jq -r '.tag')
+          echo "LLAMA_TAG=$LLAMA_TAG" >> $GITHUB_ENV
+
+          # Check if manual semver override is provided
+          if [[ -n "${{ github.event.inputs.semver_override }}" ]]; then
+            SEMVER="${{ github.event.inputs.semver_override }}"
+            echo "Using manually provided semantic version: $SEMVER"
+          else
+            # Get the latest version tag from our repository
+            LATEST_VERSION=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1)
+
+            if [[ -z "$LATEST_VERSION" ]]; then
+              # No previous version, start with 0.0.1
+              SEMVER="0.0.1"
+              echo "No previous semantic version found, starting with 0.0.1"
+            else
+              # Increment the patch version
+              LATEST_VERSION=${LATEST_VERSION#v}
+              IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST_VERSION"
+              PATCH=$((PATCH + 1))
+              SEMVER="${MAJOR}.${MINOR}.${PATCH}"
+              echo "Incrementing previous version $LATEST_VERSION to $SEMVER"
+            fi
+          fi
+
+          echo "SEMVER=$SEMVER" >> $GITHUB_ENV
+          echo "SEMVER_TAG=v$SEMVER" >> $GITHUB_ENV
+
+      - name: Process release
+        if: fromJSON(steps.check_release.outputs.result).process
+        run: |
+          # Get variables from previous steps
+          DOWNLOAD_URL=$(echo '${{ steps.check_release.outputs.result }}' | jq -r '.download_url')
+          RELEASE_NOTES=$(echo '${{ steps.check_release.outputs.result }}' | jq -r '.release_notes')
+
+          echo "DOWNLOAD_URL=$DOWNLOAD_URL" >> $GITHUB_ENV
+          echo "RELEASE_NOTES<<EOF" >> $GITHUB_ENV
+          echo "$RELEASE_NOTES" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          # Download and extract llama.cpp
+          curl -L "$DOWNLOAD_URL" -o llama.cpp.zip
+          unzip llama.cpp.zip
+
+          # Find the extracted directory
+          LLAMACPP_DIR=$(find . -type d -name "*llama.cpp*" -maxdepth 1)
+          echo "LLAMACPP_DIR=$LLAMACPP_DIR" >> $GITHUB_ENV
+
+          # Make the build script executable
+          chmod +x $LLAMACPP_DIR/build-xcframework.sh
+
+      - name: Build XCFramework
+        if: fromJSON(steps.check_release.outputs.result).process
+        run: |
+          cd $LLAMACPP_DIR
+          ./build-xcframework.sh
+
+          # Verify the XCFramework was built - use the correct build-apple directory
+          if [ ! -d "build-apple/llama.xcframework" ]; then
+            echo "Error: XCFramework was not built successfully"
+            exit 1
+          fi
+
+      - name: Package XCFramework
+        if: fromJSON(steps.check_release.outputs.result).process
+        run: |
+          cd $LLAMACPP_DIR
+          # Create zip name with our semantic version
+          XC_FILENAME="llama.cpp.xcframework.zip"
+
+          # Create zip of the XCFramework - update the path to the correct location
+          zip -r $XC_FILENAME build-apple/llama.xcframework
+          echo "XC_FILENAME=$XC_FILENAME" >> $GITHUB_ENV
+          echo "XC_PATH=$LLAMACPP_DIR/$XC_FILENAME" >> $GITHUB_ENV
+
+          # Calculate checksum using Swift's compute-checksum
+          CHECKSUM=$(swift package compute-checksum $XC_FILENAME)
+          echo "XC_CHECKSUM=$CHECKSUM" >> $GITHUB_ENV
+
+      - name: Create Release with Semantic Version
+        if: fromJSON(steps.check_release.outputs.result).process
+        id: create_release
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const semverTag = process.env.SEMVER_TAG;
+            const semver = process.env.SEMVER;
+            const llamaTag = process.env.LLAMA_TAG;
+
+            // Create release with our semantic version tag
+            const release = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: semverTag,
+              name: `llama.cpp XCFramework ${semver}`,
+              body: `This release contains the XCFramework v${semver} built from llama.cpp ${llamaTag}.\n\n## Original llama.cpp Release Notes\n\n${process.env.RELEASE_NOTES}`,
+              draft: false,
+              prerelease: false
+            });
+
+            console.log(`Created release: ${release.data.html_url}`);
+            return {
+              upload_url: release.data.upload_url,
+              release_id: release.data.id,
+              html_url: release.data.html_url
+            };
+
+      - name: Upload XCFramework to Release
+        if: fromJSON(steps.check_release.outputs.result).process
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ fromJSON(steps.create_release.outputs.result).upload_url }}
+          asset_path: ${{ env.XC_PATH }}
+          asset_name: ${{ env.XC_FILENAME }}
+          asset_content_type: application/zip
+
+      - name: Get Asset Download URL
+        if: fromJSON(steps.check_release.outputs.result).process
+        id: get_asset_url
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const releaseId = ${{ fromJSON(steps.create_release.outputs.result).release_id }};
+            const assetName = process.env.XC_FILENAME;
+
+            // Get the list of assets for this release
+            const assets = await github.rest.repos.listReleaseAssets({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: releaseId
+            });
+
+            // Find our asset
+            const asset = assets.data.find(a => a.name === assetName);
+            if (!asset) {
+              core.setFailed(`Could not find asset ${assetName} in the release`);
+              return '';
+            }
+
+            // Get the download URL
+            const downloadUrl = asset.browser_download_url;
+            console.log(`Asset download URL: ${downloadUrl}`);
+
+            return downloadUrl;
+
+      - name: Update Package.swift
+        if: fromJSON(steps.check_release.outputs.result).process
+        run: |
+          ASSET_URL="${{ steps.get_asset_url.outputs.result }}"
+          CHECKSUM="${{ env.XC_CHECKSUM }}"
+          VERSION="${{ env.SEMVER }}"
+
+          echo "Updating Package.swift with:"
+          echo "URL: $ASSET_URL"
+          echo "Checksum: $CHECKSUM"
+          echo "Version: $VERSION"
+
+          # Check if Package.swift exists
+          if [ ! -f "Package.swift" ]; then
+            # If not, create a basic template
+            cat > Package.swift << EOL
+          // swift-tools-version: 5.9
+
+          import PackageDescription
+
+          let package = Package(
+              name: "llama.cpp.xcframework",
+              platforms: [
+                  .iOS(.v16),
+                  .macOS(.v13),
+                  .visionOS(.v1),
+                  .tvOS(.v16)
+              ],
+              products: [
+                  .library(
+                      name: "llama",
+                      targets: ["llama"]
+                  ),
+              ],
+              targets: [
+                  .target(
+                      name: "llama.cpp"
+                  ),
+                  .binaryTarget(
+                      name: "llama",
+                      url: "URL_PLACEHOLDER",
+                      checksum: "CHECKSUM_PLACEHOLDER"
+                  )
+              ]
+          )
+          EOL
+          fi
+
+          # Update the URL and checksum in Package.swift
+          # This replaces the existing URL and checksum lines with the new values
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            # macOS version (uses different sed syntax)
+            sed -i '' "s|url: \".*\"|url: \"$ASSET_URL\"|g" Package.swift
+            sed -i '' "s|checksum: \".*\"|checksum: \"$CHECKSUM\"|g" Package.swift
+          else
+            # Linux version
+            sed -i "s|url: \".*\"|url: \"$ASSET_URL\"|g" Package.swift
+            sed -i "s|checksum: \".*\"|checksum: \"$CHECKSUM\"|g" Package.swift
+          fi
+
+          # Verify the changes
+          echo "Updated Package.swift:"
+          cat Package.swift
+
+      - name: Commit and Push Package.swift Changes
+        if: fromJSON(steps.check_release.outputs.result).process
+        run: |
+          # Configure git
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+          # Add and commit the changes
+          git add Package.swift
+          git commit -m "Update Package.swift for version ${{ env.SEMVER }}"
+
+          # Push the changes
+          git push origin HEAD:main
