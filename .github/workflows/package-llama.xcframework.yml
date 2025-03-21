@@ -82,10 +82,6 @@ jobs:
           LLAMA_TAG=$(echo '${{ steps.check_release.outputs.result }}' | jq -r '.tag')
           echo "LLAMA_TAG=$LLAMA_TAG" >> $GITHUB_ENV
 
-          git fetch --tags --force
-          echo "All available tags:"
-          git tag -l | sort -V
-
           # Check if manual semver override is provided
           if [[ -n "${{ github.event.inputs.semver_override }}" ]]; then
             SEMVER="${{ github.event.inputs.semver_override }}"
@@ -151,11 +147,18 @@ jobs:
         if: fromJSON(steps.check_release.outputs.result).process
         run: |
           cd $LLAMACPP_DIR
+          # Create temp directory for proper zip structure
+          mkdir -p temp/
+          cp -R build-apple/llama.xcframework temp/
+
           # Create zip name with our semantic version
           XC_FILENAME="llama.cpp.xcframework.zip"
 
-          # Create zip of the XCFramework - update the path to the correct location
-          zip -r $XC_FILENAME build-apple/llama.xcframework
+          # Create zip with llama.xcframework at the root
+          cd temp
+          zip -r ../$XC_FILENAME llama.xcframework
+          cd ..
+
           echo "XC_FILENAME=$XC_FILENAME" >> $GITHUB_ENV
           echo "XC_PATH=$LLAMACPP_DIR/$XC_FILENAME" >> $GITHUB_ENV
 
@@ -201,6 +204,29 @@ jobs:
           asset_path: ${{ env.XC_PATH }}
           asset_name: ${{ env.XC_FILENAME }}
           asset_content_type: application/zip
+
+      - name: Create Additional Tag for llama.cpp Version
+        if: fromJSON(steps.check_release.outputs.result).process
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+          # Create a new tag for the llama.cpp version that points to the same commit
+          LLAMA_TAG="${{ env.LLAMA_TAG }}"
+
+          # Fetch the release tag that was just created
+          git fetch origin tag ${{ env.SEMVER_TAG }}
+
+          # Get the commit hash of the new release
+          RELEASE_COMMIT=$(git rev-parse ${{ env.SEMVER_TAG }})
+
+          # Create a new tag for the llama.cpp version
+          git tag -a "$LLAMA_TAG" $RELEASE_COMMIT -m "llama.cpp version $LLAMA_TAG"
+
+          # Push the new tag
+          git push origin "$LLAMA_TAG"
+
+          echo "Created and pushed additional tag: $LLAMA_TAG"
 
       - name: Get Asset Download URL
         if: fromJSON(steps.check_release.outputs.result).process
