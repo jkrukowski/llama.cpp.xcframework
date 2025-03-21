@@ -166,101 +166,25 @@ jobs:
           CHECKSUM=$(swift package compute-checksum $XC_FILENAME)
           echo "XC_CHECKSUM=$CHECKSUM" >> $GITHUB_ENV
 
-      - name: Create Release with Semantic Version
+      - name: Construct Predictable Asset URL
         if: fromJSON(steps.check_release.outputs.result).process
-        id: create_release
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const semverTag = process.env.SEMVER_TAG;
-            const semver = process.env.SEMVER;
-            const llamaTag = process.env.LLAMA_TAG;
-
-            // Create release with our semantic version tag
-            const release = await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: semverTag,
-              name: `llama.cpp XCFramework ${semver}`,
-              body: `This release contains the XCFramework v${semver} built from llama.cpp ${llamaTag}.\n\n## Original llama.cpp Release Notes\n\n${process.env.RELEASE_NOTES}`,
-              draft: false,
-              prerelease: false
-            });
-
-            console.log(`Created release: ${release.data.html_url}`);
-            return {
-              upload_url: release.data.upload_url,
-              release_id: release.data.id,
-              html_url: release.data.html_url
-            };
-
-      - name: Upload XCFramework to Release
-        if: fromJSON(steps.check_release.outputs.result).process
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ fromJSON(steps.create_release.outputs.result).upload_url }}
-          asset_path: ${{ env.XC_PATH }}
-          asset_name: ${{ env.XC_FILENAME }}
-          asset_content_type: application/zip
-
-      - name: Create Additional Tag for llama.cpp Version
-        if: fromJSON(steps.check_release.outputs.result).process
+        id: construct_url
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          # Construct the predictable URL pattern that GitHub will use
+          REPO="${{ github.repository }}"
+          SEMVER="${{ env.SEMVER_TAG }}"
+          FILENAME="${{ env.XC_FILENAME }}"
 
-          # Create a new tag for the llama.cpp version that points to the same commit
-          LLAMA_TAG="${{ env.LLAMA_TAG }}"
+          # GitHub release asset URL pattern
+          ASSET_URL="https://github.com/${REPO}/releases/download/${SEMVER}/${FILENAME}"
 
-          # Fetch the release tag that was just created
-          git fetch origin tag ${{ env.SEMVER_TAG }}
-
-          # Get the commit hash of the new release
-          RELEASE_COMMIT=$(git rev-parse ${{ env.SEMVER_TAG }})
-
-          # Create a new tag for the llama.cpp version
-          git tag -a "$LLAMA_TAG" $RELEASE_COMMIT -m "llama.cpp version $LLAMA_TAG"
-
-          # Push the new tag
-          git push origin "$LLAMA_TAG"
-
-          echo "Created and pushed additional tag: $LLAMA_TAG"
-
-      - name: Get Asset Download URL
-        if: fromJSON(steps.check_release.outputs.result).process
-        id: get_asset_url
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const releaseId = ${{ fromJSON(steps.create_release.outputs.result).release_id }};
-            const assetName = process.env.XC_FILENAME;
-
-            // Get the list of assets for this release
-            const assets = await github.rest.repos.listReleaseAssets({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: releaseId
-            });
-
-            // Find our asset
-            const asset = assets.data.find(a => a.name === assetName);
-            if (!asset) {
-              core.setFailed(`Could not find asset ${assetName} in the release`);
-              return '';
-            }
-
-            // Get the download URL
-            const downloadUrl = asset.browser_download_url;
-            console.log(`Asset download URL: ${downloadUrl}`);
-
-            return downloadUrl;
+          echo "ASSET_URL=$ASSET_URL" >> $GITHUB_ENV
+          echo "Asset URL will be: $ASSET_URL"
 
       - name: Update Package.swift
         if: fromJSON(steps.check_release.outputs.result).process
         run: |
-          ASSET_URL="${{ steps.get_asset_url.outputs.result }}"
+          ASSET_URL="${{ env.ASSET_URL }}"
           CHECKSUM="${{ env.XC_CHECKSUM }}"
           VERSION="${{ env.SEMVER }}"
 
@@ -321,7 +245,7 @@ jobs:
           echo "Updated Package.swift:"
           cat Package.swift
 
-      - name: Commit and Push Package.swift Changes
+      - name: Commit Package.swift Changes
         if: fromJSON(steps.check_release.outputs.result).process
         run: |
           # Configure git
@@ -334,3 +258,62 @@ jobs:
 
           # Push the changes
           git push origin HEAD:main
+
+      - name: Create Tags
+        if: fromJSON(steps.check_release.outputs.result).process
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+          # Create tags on the latest commit (after Package.swift update)
+          LATEST_COMMIT=$(git rev-parse HEAD)
+
+          # Create semantic version tag
+          git tag -a "${{ env.SEMVER_TAG }}" $LATEST_COMMIT -m "Release version ${{ env.SEMVER }}"
+
+          # Create llama.cpp version tag
+          git tag -a "${{ env.LLAMA_TAG }}" $LATEST_COMMIT -m "llama.cpp version ${{ env.LLAMA_TAG }}"
+
+          # Push both tags
+          git push origin "${{ env.SEMVER_TAG }}" "${{ env.LLAMA_TAG }}"
+
+          echo "Created and pushed tags: ${{ env.SEMVER_TAG }}, ${{ env.LLAMA_TAG }}"
+
+      - name: Create Release with Semantic Version
+        if: fromJSON(steps.check_release.outputs.result).process
+        id: create_release
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const semverTag = process.env.SEMVER_TAG;
+            const semver = process.env.SEMVER;
+            const llamaTag = process.env.LLAMA_TAG;
+
+            // Create release with our semantic version tag
+            const release = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: semverTag,
+              name: `llama.cpp XCFramework ${semver}`,
+              body: `This release contains the XCFramework v${semver} built from llama.cpp ${llamaTag}.\n\n## Original llama.cpp Release Notes\n\n${process.env.RELEASE_NOTES}`,
+              draft: false,
+              prerelease: false
+            });
+
+            console.log(`Created release: ${release.data.html_url}`);
+            return {
+              upload_url: release.data.upload_url,
+              release_id: release.data.id,
+              html_url: release.data.html_url
+            };
+
+      - name: Upload XCFramework to Release
+        if: fromJSON(steps.check_release.outputs.result).process
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ fromJSON(steps.create_release.outputs.result).upload_url }}
+          asset_path: ${{ env.XC_PATH }}
+          asset_name: ${{ env.XC_FILENAME }}
+          asset_content_type: application/zip
