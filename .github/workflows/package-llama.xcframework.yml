@@ -11,6 +11,9 @@ on:
         required: false
         default: ''
 
+permissions:
+  contents: write
+
 jobs:
   check-and-build:
     runs-on: macos-latest
@@ -102,7 +105,7 @@ jobs:
           fi
 
           echo "SEMVER=$SEMVER" >> $GITHUB_ENV
-          echo "SEMVER_TAG=v$SEMVER" >> $GITHUB_ENV
+          echo "SEMVER_TAG=$SEMVER" >> $GITHUB_ENV
 
       - name: Process release
         if: fromJSON(steps.check_release.outputs.result).process
