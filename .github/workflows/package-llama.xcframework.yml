@@ -82,13 +82,17 @@ jobs:
           LLAMA_TAG=$(echo '${{ steps.check_release.outputs.result }}' | jq -r '.tag')
           echo "LLAMA_TAG=$LLAMA_TAG" >> $GITHUB_ENV
 
+          git fetch --tags --force
+          echo "All available tags:"
+          git tag -l | sort -V
+
           # Check if manual semver override is provided
           if [[ -n "${{ github.event.inputs.semver_override }}" ]]; then
             SEMVER="${{ github.event.inputs.semver_override }}"
             echo "Using manually provided semantic version: $SEMVER"
           else
             # Get the latest version tag from our repository
-            LATEST_VERSION=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1)
+            LATEST_VERSION=$(git tag -l '[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1)
 
             if [[ -z "$LATEST_VERSION" ]]; then
               # No previous version, start with 0.0.1
