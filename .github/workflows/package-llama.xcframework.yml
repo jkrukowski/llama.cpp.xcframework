@@ -294,7 +294,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: semverTag,
-              name: `llama.cpp ${llamaTag} XCFramework ${semver}`,
+              name: `llama.cpp ${llamaTag} - ${semver}`,
               body: `This release contains the XCFramework v${semver} built from llama.cpp ${llamaTag}.\n\n## Original llama.cpp Release Notes\n\n${process.env.RELEASE_NOTES}`,
               draft: false,
               prerelease: false
