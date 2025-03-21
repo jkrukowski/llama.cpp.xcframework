@@ -60,26 +60,14 @@ jobs:
             // We need to process this new release
             console.log(`New llama.cpp release ${latestTag} found, will process.`);
 
-            // Find the zip asset
-            const assets = response.data.assets;
-            const zipAsset = assets.find(asset => asset.name.endsWith('.zip') && asset.name.includes('llama.cpp'));
-
-            if (!zipAsset) {
-              core.setFailed('No zip file found in latest release');
-              return {
-                process: false,
-                tag: latestTag,
-                download_url: ''
-              };
-            }
-
-            console.log(`Found zip asset: ${zipAsset.name}`);
-            console.log(`Download URL: ${zipAsset.browser_download_url}`);
+            // Construct the source code zip URL directly from the tag
+            const downloadUrl = `https://github.com/ggml-org/llama.cpp/archive/refs/tags/${latestTag}.zip`;
+            console.log(`Download URL: ${downloadUrl}`);
 
             return {
               process: true,
               tag: latestTag,
-              download_url: zipAsset.browser_download_url,
+              download_url: downloadUrl,
               release_notes: response.data.body || 'No release notes provided'
             };
 
@@ -132,8 +120,9 @@ jobs:
           curl -L "$DOWNLOAD_URL" -o llama.cpp.zip
           unzip llama.cpp.zip
 
-          # Find the extracted directory
-          LLAMACPP_DIR=$(find . -type d -name "*llama.cpp*" -maxdepth 1)
+          # Find the extracted directory - it will be named llama.cpp-{tag} rather than just llama.cpp
+          LLAMACPP_DIR=$(find . -type d -name "llama.cpp*" -maxdepth 1 | head -n 1)
+          echo "Found llama.cpp directory: $LLAMACPP_DIR"
           echo "LLAMACPP_DIR=$LLAMACPP_DIR" >> $GITHUB_ENV
 
           # Make the build script executable
