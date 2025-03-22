@@ -22,8 +22,8 @@ let package = Package(
         ),
         .binaryTarget(
             name: "llama",
-            url: "https://github.com/jkrukowski/llama.cpp.xcframework/releases/download/0.0.2/llama.cpp.xcframework.zip",
-            checksum: "02bf1b4b1d335034afddb20d4ab97aeff3cc8382e3d1c62e1dd27cabf6855814"
+            url: "https://github.com/jkrukowski/llama.cpp.xcframework/releases/download/0.0.3/llama.cpp.xcframework.zip",
+            checksum: "0fd29db7ec53c2429551a6c639089d152c64d7bb5cedbe3dc988d3be03ff73fd"
         )
     ]
 )
